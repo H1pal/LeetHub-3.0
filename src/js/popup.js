@@ -29,13 +29,19 @@ $('#collapsible-commit-message-icon').click(() => {
   });
 });
 
+// Load toggle states on initialization
+chrome.storage.local.get({ useDifficultyFolder: true, useLanguageFolder: true }, data => {
+  $('#use-difficulty-folder').prop('checked', data.useDifficultyFolder);
+  $('#use-language-folder').prop('checked', data.useLanguageFolder);
+});
+
 // Toggle difficulty folder section
 $('#collapsible-difficulty-icon').click(() => {
   $('#collapsible-difficulty-icon').toggleClass('open');
   $('#collapsible-difficulty-container').toggle();
 
-  // Load from storage: use default value 'false' if not set
-  chrome.storage.local.get({ useDifficultyFolder: false }, data => {
+  // Load from storage: use default value 'true' if not set
+  chrome.storage.local.get({ useDifficultyFolder: true }, data => {
     $('#use-difficulty-folder').prop('checked', data.useDifficultyFolder);
   });
 });
@@ -51,8 +57,8 @@ $('#collapsible-language-icon').click(() => {
   $('#collapsible-language-icon').toggleClass('open');
   $('#collapsible-language-container').toggle();
 
-  // Load from storage: use default value 'false' if not set
-  chrome.storage.local.get({ useLanguageFolder: false }, data => {
+  // Load from storage: use default value 'true' if not set
+  chrome.storage.local.get({ useLanguageFolder: true }, data => {
     $('#use-language-folder').prop('checked', data.useLanguageFolder);
   });
 });

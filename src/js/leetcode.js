@@ -40,7 +40,7 @@ const leetCodeSectionStart = `<!---LeetCode Topics Start-->`;
 const leetCodeSectionHeader = `# LeetCode Topics`;
 const leetCodeSectionEnd = `<!---LeetCode Topics End-->`;
 const readmeFilename = 'README.md';
-const defaultRepoReadme = "Contains topicwise list of solved problems.\n\n";
+const defaultRepoReadme = 'Contains topicwise list of solved problems.\n\n';
 
 // SubFolder
 const basePath = 'LeetCode';
@@ -90,42 +90,84 @@ function getLanguageFromExtension(extension) {
 }
 
 /**
+ * Constructs the relative file path within the repository.
+ *
+ * @param {string} problem - Problem slug or directory name (e.g., "0001-two-sum").
+ * @param {string} filename - Name of the file (e.g., "0001-two-sum.js").
+ * @param {boolean} [useDifficultyFolder=true] - Whether to include the difficulty as a subfolder.
+ * @param {boolean} [useLanguageFolder=true] - Whether to include the language as a subfolder.
+ * @param {string} [diff=difficulty] - Problem difficulty (e.g., "Easy", "Medium", "Hard").
+ * @returns {string} Relative file path within the repository.
+ */
+function getProblemFilePath(
+  problem,
+  filename,
+  useDifficultyFolder = true,
+  useLanguageFolder = true,
+  diff = difficulty,
+) {
+  if (!problem) {
+    return filename;
+  }
+
+  const language = last_language;
+  const pathSegments = [];
+
+  if (basePath) {
+    pathSegments.push(basePath);
+  }
+
+  if (useLanguageFolder && language) {
+    pathSegments.push(language);
+  }
+
+  if (useDifficultyFolder && diff) {
+    pathSegments.push(diff);
+  }
+
+  pathSegments.push(problem);
+  pathSegments.push(filename);
+
+  return pathSegments.join('/');
+}
+
+/**
  * Constructs the full GitHub API URL to upload a file to a specific path in the repository.
  *
  * @param {string} hook - GitHub repository path in the format "username/repo".
  * @param {string} basePath - Base folder path where the file will be uploaded (e.g., "algorithm/LeetCode").
- * @param {string} difficulty - Problem difficulty (e.g., "Easy", "Medium", "Hard").
+ * @param {string} diff - Problem difficulty (e.g., "Easy", "Medium", "Hard").
  * @param {string} problem - Problem slug or directory name (e.g., "0001-two-sum").
  * @param {string} filename - Name of the file to upload (e.g., "0001-two-sum.js").
  * @param {boolean} [useDifficultyFolder=true] - Whether to include the difficulty as a subfolder.
- * @param {boolean} useLanguageFolder - Whether to include the language as a subfolder.
+ * @param {boolean} [useLanguageFolder=true] - Whether to include the language as a subfolder.
  * @returns {string} Full GitHub API URL for the file upload.
  */
-
 function constructGitHubPath(
   hook,
   basePath,
-  difficulty,
+  diff,
   problem,
   filename,
-  useDifficultyFolder,
+  useDifficultyFolder = false,
   useLanguageFolder = false,
 ) {
-  const filePath = problem ? `${problem}/${filename}` : `${filename}`;
-  if (useLanguageFolder) {
-    const language = last_language;
-    console.log('Language:', language);
-    if (language) {
-      const path = useDifficultyFolder
-        ? `${language}/${difficulty}/${filePath}`
-        : `${language}/${filePath}`;
-      return `https://api.github.com/repos/${hook}/contents/${path}`;
-    }
+  // If problem is empty, this is the root README.md for the repository topic list
+  if (!problem) {
+    return `https://api.github.com/repos/${hook}/contents/${encodeURIComponent(filename)}`;
   }
-  const path = useDifficultyFolder
-    ? `${basePath}/${difficulty}/${filePath}`
-    : `${filePath}`;
-  return `https://api.github.com/repos/${hook}/contents/${path}`;
+
+  const filePath = getProblemFilePath(
+    problem,
+    filename,
+    useDifficultyFolder,
+    useLanguageFolder,
+    diff,
+  );
+
+  // Encode each segment so special characters like '+' in 'C++' or '#' in 'C#' are handled properly by GitHub API
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+  return `https://api.github.com/repos/${hook}/contents/${encodedPath}`;
 }
 
 const parseCustomCommitMessage = (text, problemContext) => {
@@ -154,6 +196,51 @@ const getCustomCommitMessage = problemContext => {
 };
 
 /**
+ * Computes updated content for repository root README.md with problem added to topics.
+ * Returns null if no changes or no topic tags.
+ *
+ * @param {string} token - GitHub access token
+ * @param {string} hook - GitHub repository ("username/repo")
+ * @param {Array} topicTags - Topic tags for the problem
+ * @param {string} problemName - Problem slug
+ * @returns {Promise<string|null>} Base64 encoded updated README content, or null if unchanged
+ */
+async function getUpdatedRepoReadme(token, hook, topicTags, problemName) {
+  if (!topicTags || topicTags.length === 0) {
+    return null;
+  }
+
+  let readme = '';
+  let exists = true;
+
+  try {
+    const { content } = await getUpdatedData(token, hook, '', readmeFilename, false, false);
+    readme = decodeURIComponent(escape(atob(content)));
+  } catch (err) {
+    if (err.message === '404') {
+      readme = defaultRepoReadme;
+      exists = false;
+    } else {
+      console.log(`Error fetching README: ${err.message}`);
+      return null;
+    }
+  }
+
+  const originalReadme = readme;
+  for (const topic of topicTags) {
+    readme = await appendProblemToReadme(topic.name, readme, hook, problemName);
+  }
+
+  readme = sortTopicsInReadme(readme);
+
+  if (readme !== originalReadme || !exists) {
+    return btoa(unescape(encodeURIComponent(readme)));
+  }
+
+  return null;
+}
+
+/**
  * Appends a problem to the README file for a specific topic.
  * Creates a new topic if it doesn't exist. Creates a new README.md if it doesn't exist.
  *
@@ -161,8 +248,7 @@ const getCustomCommitMessage = problemContext => {
  * @param {string} problemName - The name of the problem to be added.
  */
 async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
-  if (!topicTags) {
-    console.log('No topic tags provided');
+  if (!topicTags || topicTags.length === 0) {
     return;
   }
 
@@ -172,75 +258,49 @@ async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
     'stats',
   ]);
 
-  let readme = '';
-  let newSha = '';
-
-  try {
-    const { content, sha } = await getUpdatedData(
-      leethub_token,
-      leethub_hook,
-      '',
-      readmeFilename,
-      false
-    );
-    newSha = sha;
-    readme = decodeURIComponent(escape(atob(content)));
-    stats.shas[readmeFilename] = { '': sha };
-    await chrome.storage.local.set({ stats });
-  } catch (err) {
-    if (err.message === '404') {
-      const initialContent = btoa(unescape(encodeURIComponent(defaultRepoReadme)));
-      const uploadResponse = await upload(
-        leethub_token,
-        leethub_hook,
-        initialContent,
-        '',
-        readmeFilename,
-        null,
-        'Initialize README.md',
-        undefined,
-        false
-      );
-      newSha = uploadResponse.content.sha;
-      readme = defaultRepoReadme;
-
-      stats.shas[readmeFilename] = { '': newSha };
-      await chrome.storage.local.set({ stats });
-    } else {
-      console.log(`Error fetching README: ${err.message}`);
-      return;
-    }
+  const encodedReadme = await getUpdatedRepoReadme(
+    leethub_token,
+    leethub_hook,
+    topicTags,
+    problemName,
+  );
+  if (!encodedReadme) {
+    return;
   }
 
-  for (const topic of topicTags) {
-    readme = await appendProblemToReadme(topic.name, readme, leethub_hook, problemName);
-  }
+  const sha = stats?.shas?.[readmeFilename]?.[''] || null;
 
-  readme = sortTopicsInReadme(readme);
-
-  const encodedReadme = btoa(unescape(encodeURIComponent(readme)));
   try {
-    return await upload(
+    const uploadResponse = await upload(
       leethub_token,
       leethub_hook,
       encodedReadme,
       '',
       readmeFilename,
-      newSha,
+      sha,
       `Add ${problemName} to topics.`,
       undefined,
-      false
+      false,
+      false,
     );
+    if (uploadResponse?.content?.sha) {
+      if (stats) {
+        if (!stats.shas) {
+          stats.shas = {};
+        }
+        stats.shas[readmeFilename] = { '': uploadResponse.content.sha };
+        await chrome.storage.local.set({ stats });
+      }
+    }
   } catch (err) {
     if (err.message === '409') {
-      // Handle 409 Conflict by fetching the latest SHA and retrying
-      console.log(`Conflict detected for ${readmeFilename}. Fetching latest SHA...`);
       const { sha: latestSha } = await getUpdatedData(
         leethub_token,
         leethub_hook,
         '',
         readmeFilename,
-        false
+        false,
+        false,
       );
       return upload(
         leethub_token,
@@ -251,11 +311,244 @@ async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
         latestSha,
         `Add ${problemName} to topics.`,
         undefined,
-        false
+        false,
+        false,
       );
-    } else {
-        console.log(`Error updating README: ${err.message}`);
-        return;
+    }
+    console.log(`Error updating README: ${err.message}`);
+  }
+}
+
+/**
+ * Gets the default branch of the repository.
+ *
+ * @param {string} token - GitHub access token
+ * @param {string} hook - GitHub repository ("username/repo")
+ * @returns {Promise<string>} Default branch name
+ */
+async function getDefaultBranch(token, hook) {
+  const cacheKey = `default_branch_${hook}`;
+  const cached = await chrome.storage.local.get(cacheKey);
+  if (cached[cacheKey]) {
+    return cached[cacheKey];
+  }
+
+  const response = await fetch(`https://api.github.com/repos/${hook}`, {
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: 'application/vnd.github.v3+json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch repo info: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const defaultBranch = data.default_branch || 'main';
+  await chrome.storage.local.set({ [cacheKey]: defaultBranch });
+  return defaultBranch;
+}
+
+/**
+ * Creates a git blob in the repository.
+ *
+ * @param {string} token - GitHub access token
+ * @param {string} hook - GitHub repository ("username/repo")
+ * @param {string} base64Content - Base64 encoded file content
+ * @returns {Promise<string>} Blob SHA
+ */
+async function createBlob(token, hook, base64Content) {
+  const response = await fetch(`https://api.github.com/repos/${hook}/git/blobs`, {
+    method: 'POST',
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      content: base64Content,
+      encoding: 'base64',
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to create blob: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.sha;
+}
+
+/**
+ * Uploads multiple files in a single atomic Git commit using GitHub Git Database API.
+ *
+ * @param {string} token - GitHub access token
+ * @param {string} hook - GitHub repository ("username/repo")
+ * @param {Array<{path: string, content: string, filename: string, problemName: string}>} files - Files to commit
+ * @param {string} commitMsg - Commit message
+ * @returns {Promise<{commitSha: string, blobs: Array<{path: string, filename: string, problemName: string, sha: string}>}>}
+ */
+async function uploadAtomicCommit(token, hook, files, commitMsg) {
+  if (!files || files.length === 0) {
+    return null;
+  }
+
+  const branch = await getDefaultBranch(token, hook);
+
+  // 1. Get latest commit SHA on the branch
+  const refRes = await fetch(
+    `https://api.github.com/repos/${hook}/git/ref/heads/${encodeURIComponent(branch)}`,
+    {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+      },
+    },
+  );
+
+  if (refRes.status === 404) {
+    throw new Error('EMPTY_REPO');
+  }
+
+  if (!refRes.ok) {
+    throw new Error(`Failed to get branch ref: ${refRes.status}`);
+  }
+
+  const refData = await refRes.json();
+  const parentCommitSha = refData.object.sha;
+
+  // 2. Get tree SHA of the parent commit
+  const commitRes = await fetch(
+    `https://api.github.com/repos/${hook}/git/commits/${parentCommitSha}`,
+    {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+      },
+    },
+  );
+
+  if (!commitRes.ok) {
+    throw new Error(`Failed to get parent commit: ${commitRes.status}`);
+  }
+
+  const commitData = await commitRes.json();
+  const baseTreeSha = commitData.tree.sha;
+
+  // 3. Create blobs for each file concurrently
+  const blobs = await Promise.all(
+    files.map(async file => {
+      const sha = await createBlob(token, hook, file.content);
+      return {
+        path: file.path,
+        mode: '100644',
+        type: 'blob',
+        sha,
+        filename: file.filename,
+        problemName: file.problemName,
+      };
+    }),
+  );
+
+  // 4. Create new tree with base_tree to preserve other files in repo
+  const treePayload = {
+    base_tree: baseTreeSha,
+    tree: blobs.map(b => ({
+      path: b.path,
+      mode: b.mode,
+      type: b.type,
+      sha: b.sha,
+    })),
+  };
+
+  const treeRes = await fetch(`https://api.github.com/repos/${hook}/git/trees`, {
+    method: 'POST',
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(treePayload),
+  });
+
+  if (!treeRes.ok) {
+    throw new Error(`Failed to create tree: ${treeRes.status}`);
+  }
+
+  const treeData = await treeRes.json();
+  const newTreeSha = treeData.sha;
+
+  // 5. Create new commit
+  const commitPayload = {
+    message: commitMsg,
+    tree: newTreeSha,
+    parents: [parentCommitSha],
+  };
+
+  const newCommitRes = await fetch(`https://api.github.com/repos/${hook}/git/commits`, {
+    method: 'POST',
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(commitPayload),
+  });
+
+  if (!newCommitRes.ok) {
+    throw new Error(`Failed to create commit: ${newCommitRes.status}`);
+  }
+
+  const newCommitData = await newCommitRes.json();
+  const newCommitSha = newCommitData.sha;
+
+  // 6. Update branch reference
+  const updateRefRes = await fetch(
+    `https://api.github.com/repos/${hook}/git/refs/heads/${encodeURIComponent(branch)}`,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sha: newCommitSha,
+        force: false,
+      }),
+    },
+  );
+
+  if (updateRefRes.status === 409 || updateRefRes.status === 422) {
+    throw new Error('409');
+  }
+
+  if (!updateRefRes.ok) {
+    throw new Error(`Failed to update ref: ${updateRefRes.status}`);
+  }
+
+  console.log(`Successfully committed ${files.length} file(s) in single commit ${newCommitSha}`);
+  return { commitSha: newCommitSha, blobs };
+}
+
+/**
+ * Uploads atomic commit with automatic retry on conflict.
+ */
+async function uploadAtomicCommitWithRetry(token, hook, files, commitMsg, retries = 2) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await uploadAtomicCommit(token, hook, files, commitMsg);
+    } catch (err) {
+      if (err.message === 'EMPTY_REPO') {
+        throw err;
+      }
+      if (err.message === '409' && attempt < retries - 1) {
+        console.log(`Commit conflict detected. Retrying atomic commit (attempt ${attempt + 1})...`);
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+      throw err;
     }
   }
 }
@@ -288,7 +581,7 @@ const upload = (
   let data = {
     message: commitMsg,
     content: code,
-    sha,
+    ...(sha ? { sha } : {}),
   };
 
   data = JSON.stringify(data);
@@ -448,14 +741,12 @@ function uploadGit(
       if (!hook) {
         throw new Error('leethub hook not defined');
       }
-      return chrome.storage.local.get('useDifficultyFolder');
+      return chrome.storage.local.get(['useDifficultyFolder', 'useLanguageFolder']);
     })
     .then(result => {
-      useDifficultyFolder = result.useDifficultyFolder || false;
-      return chrome.storage.local.get('useLanguageFolder');
-    })
-    .then(result => {
-      useLanguageFolder = result.useLanguageFolder || false;
+      useDifficultyFolder =
+        result.useDifficultyFolder !== undefined ? result.useDifficultyFolder : true;
+      useLanguageFolder = result.useLanguageFolder !== undefined ? result.useLanguageFolder : true;
       return chrome.storage.local.get('stats');
     })
     .then(({ stats }) => {
@@ -491,7 +782,7 @@ function uploadGit(
       }
     })
     .catch(err => {
-      if (err.message === '409') {
+      if (err.message === '409' || err.message === '422' || err.message === '404') {
         return getUpdatedData(
           token,
           hook,
@@ -499,27 +790,27 @@ function uploadGit(
           fileName,
           useDifficultyFolder,
           useLanguageFolder,
-        );
+        )
+          .then(data => data?.sha ?? null)
+          .catch(() => null)
+          .then(latestSha =>
+            upload(
+              token,
+              hook,
+              code,
+              problemName,
+              fileName,
+              latestSha,
+              commitMsg,
+              cb,
+              useDifficultyFolder,
+              useLanguageFolder,
+            ),
+          );
       } else {
         throw err;
       }
-    })
-    .then(data =>
-      data != null
-        ? upload(
-            token,
-            hook,
-            code,
-            problemName,
-            fileName,
-            data.sha,
-            commitMsg,
-            cb,
-            useDifficultyFolder,
-            useLanguageFolder,
-          )
-        : undefined,
-    );
+    });
 }
 
 /* Gets updated GitHub data for the specific file in repo in question */
@@ -549,18 +840,11 @@ async function getUpdatedData(
     },
   };
 
-return fetch(URL, options)
-  .then(res => {
+  return fetch(URL, options).then(res => {
     if (res.status === 200 || res.status === 201) {
       return res.json();
-    } else {
-      console.log(`Fetch failed with status: ${res.status}`);
-      return {};
     }
-  })
-  .catch(err => {
-    console.log(`Fetch error: ${err.message}`);
-    return {};
+    throw new Error(res.status);
   });
 }
 
@@ -691,7 +975,14 @@ document.addEventListener('click', event => {
         const addition = `[Discussion Post (created on ${currentDate})](${window.location})  \n`;
         const problemName = window.location.pathname.split('/')[2]; // must be true.
 
-        uploadGit(addition, problemName, 'README.md', `Prepend discussion post: ${problemName}`, 'update', true);
+        uploadGit(
+          addition,
+          problemName,
+          'README.md',
+          `Prepend discussion post: ${problemName}`,
+          'update',
+          true,
+        );
       }
     }, 1000);
   }
@@ -708,13 +999,7 @@ LeetCodeV1.prototype.init = async function () {};
 /* - Then send a request for the details page. */
 /* - Parse the code from the html reponse. */
 /* - Parse the stats from the html response (explore section) */
-LeetCodeV1.prototype.findAndUploadCode = function (
-  problemName,
-  fileName,
-  commitMsg,
-  action,
-  cb = undefined,
-) {
+LeetCodeV1.prototype.findCode = function () {
   /* Get the submission details url from the submission page. */
   let submissionURL;
   const e = document.getElementsByClassName('status-column__3SUg');
@@ -725,11 +1010,13 @@ LeetCodeV1.prototype.findAndUploadCode = function (
   } else {
     // for a submission in explore section
     const submissionRef = document.getElementById('result-state');
-    submissionURL = submissionRef.href;
+    if (submissionRef) {
+      submissionURL = submissionRef.href;
+    }
   }
 
   if (submissionURL == undefined) {
-    return;
+    return Promise.resolve(null);
   }
   /* Request for the submission details page */
   return fetch(submissionURL)
@@ -763,35 +1050,48 @@ LeetCodeV1.prototype.findAndUploadCode = function (
             return String.fromCharCode(parseInt(match.replace(/\\u/g, ''), 16));
           });
 
+          let commitMsg;
           /* For a submission in explore section we do not get probStat beforehand.
             So, parse statistics from submisson page */
-          if (!commitMsg) {
-            slicedText = text.slice(text.indexOf('runtime'), text.indexOf('memory'));
-            const resultRuntime = slicedText.slice(
-              slicedText.indexOf("'") + 1,
-              slicedText.lastIndexOf("'"),
-            );
-            slicedText = text.slice(text.indexOf('memory'), text.indexOf('total_correct'));
-            const resultMemory = slicedText.slice(
-              slicedText.indexOf("'") + 1,
-              slicedText.lastIndexOf("'"),
-            );
+          slicedText = text.slice(text.indexOf('runtime'), text.indexOf('memory'));
+          const resultRuntime = slicedText.slice(
+            slicedText.indexOf("'") + 1,
+            slicedText.lastIndexOf("'"),
+          );
+          slicedText = text.slice(text.indexOf('memory'), text.indexOf('total_correct'));
+          const resultMemory = slicedText.slice(
+            slicedText.indexOf("'") + 1,
+            slicedText.lastIndexOf("'"),
+          );
+          if (resultRuntime && resultMemory) {
             commitMsg = `Time: ${resultRuntime}, Memory: ${resultMemory} - LeetHub`;
           }
-          if (code != null) {
-            return uploadGit(
-              btoa(unescape(encodeURIComponent(code))),
-              problemName,
-              fileName,
-              commitMsg,
-              action,
-              false,
-              cb,
-            );
-          }
+          return { code, commitMsg };
         }
       }
+      return null;
     });
+};
+
+LeetCodeV1.prototype.findAndUploadCode = async function (
+  problemName,
+  fileName,
+  commitMsg,
+  action,
+  cb = undefined,
+) {
+  const result = await this.findCode();
+  if (result && result.code) {
+    return uploadGit(
+      btoa(unescape(encodeURIComponent(result.code))),
+      problemName,
+      fileName,
+      commitMsg || result.commitMsg,
+      action,
+      false,
+      cb,
+    );
+  }
 };
 // Returns the language extension
 LeetCodeV1.prototype.getLanguageExtension = function () {
@@ -1030,12 +1330,12 @@ LeetCodeV1.prototype.markUploadFailed = function () {
  * and listens for messages from the injected script.
  */
 LeetCodeV2.prototype.injectAndListen = function () {
-  window.addEventListener('leetHubSubmissionId', (event) => {
+  window.addEventListener('leetHubSubmissionId', event => {
     console.log('[LeetHub] Received submission ID:', event.detail.submissionId);
     this.processSubmission(event.detail.submissionId);
   });
 
-  window.addEventListener('leetHubSolutionPost', (event) => {
+  window.addEventListener('leetHubSolutionPost', event => {
     const { questionSlug, content, title } = event.detail;
     console.log('LeetHub: Received solution post event:', event.detail);
     this.handleSolutionPost(questionSlug, content, title);
@@ -1062,11 +1362,11 @@ function LeetCodeV2() {
   this.injectAndListen();
 }
 LeetCodeV2.prototype.init = async function () {
-    const submissionId = window.leethubLastSubmissionId;
-    if (!submissionId) {
-      alert('Could not find a recent submission ID. Please try submitting again.');
-      return;
-    }
+  const submissionId = window.leethubLastSubmissionId;
+  if (!submissionId) {
+    alert('Could not find a recent submission ID. Please try submitting again.');
+    return;
+  }
   // Query for getting the solution runtime and memory stats, the code, the coding language, the question id, question title and question difficulty
   const isCN = getLeetCodeBaseUrl() === 'https://leetcode.cn';
   const submissionDetailsQuery = {
@@ -1157,6 +1457,10 @@ query submissionDetails($submissionId: ID!) {
     .then(res => res.json())
     .then(res => res.data.question);
   this.questionDetails = questionDetailsData;
+};
+LeetCodeV2.prototype.findCode = async function () {
+  const code = this.getCode();
+  return { code };
 };
 LeetCodeV2.prototype.findAndUploadCode = function (
   problemName,
@@ -1277,7 +1581,8 @@ LeetCodeV2.prototype.parseQuestion = function () {
     const qTitle = `${this.extractQuestionNumber()}. ${this.submissionData.question.title}`;
     const qBody = this.parseQuestionDescription();
 
-    difficulty = this.submissionData.question.difficulty;
+    difficulty =
+      this.submissionData?.question?.difficulty || this.questionDetails?.difficulty || '';
 
     // Final formatting of the contents of the README for each problem
     markdown = `<h2><a href="${questionUrl}">${qTitle}</a></h2><h3>${difficulty}</h3><hr>${qBody}`;
@@ -1434,8 +1739,8 @@ LeetCodeV2.prototype.addUrlChangeListener = function () {
   });
 };
 
-/* Sync to local storage */
-chrome.storage.local.get('isSync', data => {
+/* Sync to local storage and initialize defaults */
+chrome.storage.local.get(['isSync', 'useDifficultyFolder', 'useLanguageFolder'], localData => {
   const keys = [
     'leethub_token',
     'leethub_username',
@@ -1444,18 +1749,33 @@ chrome.storage.local.get('isSync', data => {
     'leethub_hook',
     'mode_type',
     'custom_commit_message',
+    'useDifficultyFolder',
+    'useLanguageFolder',
   ];
-  if (!data || !data.isSync) {
+
+  if (!localData || !localData.isSync) {
     keys.forEach(key => {
-      chrome.storage.sync.get(key, data => {
-        chrome.storage.local.set({ [key]: data[key] });
+      chrome.storage.sync.get(key, syncData => {
+        if (syncData && syncData[key] !== undefined) {
+          chrome.storage.local.set({ [key]: syncData[key] });
+        }
       });
     });
-    chrome.storage.local.set({ isSync: true }, _ => {
+    chrome.storage.local.set({ isSync: true }, () => {
       console.log('LeetHub Synced to local values');
     });
-  } else {
-    console.log('LeetHub Local storage already synced!');
+  }
+
+  // Set defaults for useDifficultyFolder and useLanguageFolder if not yet set
+  const defaults = {};
+  if (localData?.useDifficultyFolder === undefined) {
+    defaults.useDifficultyFolder = true;
+  }
+  if (localData?.useLanguageFolder === undefined) {
+    defaults.useLanguageFolder = true;
+  }
+  if (Object.keys(defaults).length > 0) {
+    chrome.storage.local.set(defaults);
   }
 });
 
@@ -1498,35 +1818,45 @@ const loader = (leetCode, suffix) => {
         throw new Error('Could not find language');
       }
       last_language = leetCode.getLanguage();
-      
-      /* Upload README */
-      const updateReadMe = await chrome.storage.local.get('stats').then(({ stats }) => {
-        const shaExists = stats?.shas?.[problemName]?.['README.md'] !== undefined;
 
-        if (!shaExists) {
-          return uploadGit(
-            btoa(unescape(encodeURIComponent(probStatement))),
-            problemName,
-            'README.md',
-            `Create readme : ${problemName}`,
-            'upload',
-            false,
-          );
+      if (!difficulty && typeof leetCode.parseDifficulty === 'function') {
+        const parsedDiff = leetCode.parseDifficulty();
+        if (parsedDiff && parsedDiff !== 'unknown') {
+          difficulty = parsedDiff;
         }
-      });
+      }
 
-      /* Upload Notes if any*/
-      let notes = leetCode.getNotesIfAny();
-      let updateNotes;
-      if (notes != undefined && notes.length > 0) {
-        updateNotes = uploadGit(
-          btoa(unescape(encodeURIComponent(notes))),
-          problemName,
-          'NOTES.md',
-          `Attach Notes : ${problemName}`,
-          'upload',
-          false,
-        );
+      const { leethub_token, leethub_hook, mode_type } = await chrome.storage.local.get([
+        'leethub_token',
+        'leethub_hook',
+        'mode_type',
+      ]);
+
+      if (!leethub_token) {
+        throw new Error('leethub token is undefined');
+      }
+      if (mode_type !== 'commit') {
+        throw new Error('leethub mode is not commit');
+      }
+      if (!leethub_hook) {
+        throw new Error('leethub hook not defined');
+      }
+
+      const folderSettings = await chrome.storage.local.get([
+        'useDifficultyFolder',
+        'useLanguageFolder',
+      ]);
+      const useDifficultyFolder =
+        folderSettings.useDifficultyFolder !== undefined
+          ? folderSettings.useDifficultyFolder
+          : true;
+      const useLanguageFolder =
+        folderSettings.useLanguageFolder !== undefined ? folderSettings.useLanguageFolder : true;
+
+      const codeResult = await leetCode.findCode();
+      const code = codeResult?.code;
+      if (!code) {
+        throw new Error('Could not find solution code');
       }
 
       const problemContext = {
@@ -1539,7 +1869,10 @@ const loader = (leetCode, suffix) => {
         problemTopic: probStats.problemTopic,
       };
       const probStatsCommitMsg = `Time: ${probStats.time} (${probStats.timePercentile}%), Space: ${probStats.space} (${probStats.spacePercentile}%) - LeetHub`; // default commit
-      const commitMsg = (await getCustomCommitMessage(problemContext)) || probStatsCommitMsg;
+      const commitMsg =
+        (await getCustomCommitMessage(problemContext)) ||
+        codeResult?.commitMsg ||
+        probStatsCommitMsg;
 
       const { useTimestampFilename = false } =
         await chrome.storage.local.get('useTimestampFilename');
@@ -1554,16 +1887,114 @@ const loader = (leetCode, suffix) => {
         fileName = suffix ? `${problemName}${suffix}${language}` : `${problemName}${language}`;
       }
 
-      /* Upload code to Git */
-      const updateCode = leetCode.findAndUploadCode(problemName, fileName, commitMsg, 'upload');
+      const stats = await getAndInitializeStats(problemName);
+      const shaExists = stats?.shas?.[problemName]?.['README.md'] !== undefined;
 
-      /* Group problem into its relevant topics */
-      const updateRepoReadMe = updateReadmeTopicTagsWithProblem(
-        leetCode.questionDetails?.topicTags,
-        problemName
+      const filesToCommit = [];
+
+      /* Include README.md if not already committed for this problem */
+      if (!shaExists && probStatement) {
+        const readmePath = getProblemFilePath(
+          problemName,
+          'README.md',
+          useDifficultyFolder,
+          useLanguageFolder,
+        );
+        filesToCommit.push({
+          path: readmePath,
+          content: btoa(unescape(encodeURIComponent(probStatement))),
+          filename: 'README.md',
+          problemName: problemName,
+        });
+      }
+
+      /* Include solution code */
+      const codePath = getProblemFilePath(
+        problemName,
+        fileName,
+        useDifficultyFolder,
+        useLanguageFolder,
       );
+      filesToCommit.push({
+        path: codePath,
+        content: btoa(unescape(encodeURIComponent(code))),
+        filename: fileName,
+        problemName: problemName,
+      });
 
-      await Promise.all([updateReadMe, updateNotes, updateCode, updateRepoReadMe]);
+      /* Include Notes if any */
+      const notes = leetCode.getNotesIfAny();
+      if (notes != null && notes.length > 0) {
+        const notesPath = getProblemFilePath(
+          problemName,
+          'NOTES.md',
+          useDifficultyFolder,
+          useLanguageFolder,
+        );
+        filesToCommit.push({
+          path: notesPath,
+          content: btoa(unescape(encodeURIComponent(notes))),
+          filename: 'NOTES.md',
+          problemName: problemName,
+        });
+      }
+
+      /* Include root README.md topic tags update if applicable */
+      const updatedRepoReadme = await getUpdatedRepoReadme(
+        leethub_token,
+        leethub_hook,
+        leetCode.questionDetails?.topicTags,
+        problemName,
+      );
+      if (updatedRepoReadme) {
+        filesToCommit.push({
+          path: readmeFilename,
+          content: updatedRepoReadme,
+          filename: readmeFilename,
+          problemName: '',
+        });
+      }
+
+      /* Commit all files in a single atomic Git commit */
+      try {
+        const result = await uploadAtomicCommitWithRetry(
+          leethub_token,
+          leethub_hook,
+          filesToCommit,
+          commitMsg,
+        );
+        if (result && result.blobs) {
+          for (const blob of result.blobs) {
+            if (blob.problemName) {
+              if (!stats.shas[blob.problemName]) {
+                stats.shas[blob.problemName] = {};
+              }
+              stats.shas[blob.problemName][blob.filename] = blob.sha;
+            } else if (blob.filename === readmeFilename) {
+              stats.shas[readmeFilename] = { '': blob.sha };
+            }
+          }
+          await chrome.storage.local.set({ stats });
+        }
+      } catch (commitErr) {
+        if (commitErr.message === 'EMPTY_REPO') {
+          console.log(
+            'Empty repository detected. Falling back to sequential file upload to initialize repo...',
+          );
+          for (const file of filesToCommit) {
+            await uploadGit(
+              file.content,
+              file.problemName,
+              file.filename,
+              commitMsg,
+              'upload',
+              false,
+            );
+          }
+        } else {
+          throw commitErr;
+        }
+      }
 
       uploadState.uploading = false;
       leetCode.markUploaded();
@@ -1579,7 +2010,6 @@ const loader = (leetCode, suffix) => {
     }
   }, 1000);
 };
-
 
 // Use MutationObserver to determine when the submit button elements are loaded
 const observer = new MutationObserver(function (_mutations, observer) {
@@ -1615,7 +2045,6 @@ setTimeout(() => {
   });
 }, 2000);
 
-
 /**
  * @param {string} topic - Topic to which the problem will be added.
  * @param {string} markdownFile - The markdown file content.
@@ -1625,29 +2054,29 @@ setTimeout(() => {
  * @returns {string} - The updated markdown file content.
  */
 async function appendProblemToReadme(topic, markdownFile, hook, problem) {
-  const { useDifficultyFolder = false } = await chrome.storage.local.get('useDifficultyFolder');
-  const { useLanguageFolder = false } = await chrome.storage.local.get('useLanguageFolder');
-  const filePath = problem ? `${problem}/` : '';
+  const { useDifficultyFolder = true } = await chrome.storage.local.get('useDifficultyFolder');
+  const { useLanguageFolder = true } = await chrome.storage.local.get('useLanguageFolder');
 
-  let path = '';
-  if (useLanguageFolder) {
-    const language = last_language;
-    console.log('Language:', language);
-    if (language) {
-      path = useDifficultyFolder
-        ? `${language}/${difficulty}/${filePath}`
-        : `${language}/${filePath}`;
-    } else {
-      console.log("No language found for problem:", problem);
-      return ''
-    }
-  } else {
-    path = useDifficultyFolder
-    ? `${basePath}/${difficulty}/${filePath}`
-    : `${filePath}`;
+  const language = last_language;
+  let pathSegments = [];
+  if (basePath) {
+    pathSegments.push(basePath);
+  }
+  if (useLanguageFolder && language) {
+    pathSegments.push(language);
+  }
+  if (useDifficultyFolder && difficulty) {
+    pathSegments.push(difficulty);
+  }
+  if (problem) {
+    pathSegments.push(problem);
   }
 
-  const url = `https://github.com/${hook}/tree/main/${path}`;
+  const path = pathSegments.map(encodeURIComponent).join('/');
+  const branchKey = `default_branch_${hook}`;
+  const branchData = await chrome.storage.local.get(branchKey);
+  const branch = branchData[branchKey] || 'main';
+  const url = `https://github.com/${hook}/tree/${encodeURIComponent(branch)}/${path}`;
 
   const topicHeader = `## ${topic}`;
   const topicTableHeader = `\n${topicHeader}\n| Problem Name | Difficulty |\n| ------- | ------- |\n`;
@@ -1681,7 +2110,8 @@ async function appendProblemToReadme(topic, markdownFile, hook, problem) {
 
   // Get the Topic table. If topic table was just added, then its end === LeetCode Section end
   const endTopicString = leetCodeSection.slice(topicTableIndex).match(/\|\n[^|]/)?.[0];
-  const endTopicIndex = (endTopicString != null) ? leetCodeSection.indexOf(endTopicString, topicTableIndex + 1) : -1;
+  const endTopicIndex =
+    endTopicString != null ? leetCodeSection.indexOf(endTopicString, topicTableIndex + 1) : -1;
   let topicTable =
     endTopicIndex === -1
       ? leetCodeSection.slice(topicTableIndex)
@@ -1726,7 +2156,6 @@ function sortTopicsInReadme(markdownFile) {
     new RegExp(`${leetCodeSectionStart}([\\s\\S]*)${leetCodeSectionEnd}`),
   )?.[1];
   if (leetCodeSection == null) throw new Error('LeetCodeTopicSectionNotFound');
-
 
   // Remove the header
   let topics = leetCodeSection.trim().split('## ');
@@ -1776,7 +2205,9 @@ function sortTopicsInReadme(markdownFile) {
     });
 
     // Reconstruct the topic
-    return ['## ' + topic].concat('| Problem Name | Difficulty |', '| ------- | ------- |', lines).join('\n');
+    return ['## ' + topic]
+      .concat('| Problem Name | Difficulty |', '| ------- | ------- |', lines)
+      .join('\n');
   });
 
   // Reconstruct the file
@@ -1850,13 +2281,14 @@ async function getLastCommitMessage(problemName) {
     let actualProblemName = problemName;
     if (!stats.shas[problemName]) {
       const availableProblems = Object.keys(stats.shas);
-      
+
       // Try to find a problem that contains the slug or vice versa
       const questionSlugPart = problemName.replace(/^\d{4}-/, ''); // Remove leading number if present
-      const matchingProblem = availableProblems.find(name => 
-        name.includes(questionSlugPart) || questionSlugPart.includes(name.replace(/^\d{4}-/, ''))
+      const matchingProblem = availableProblems.find(
+        name =>
+          name.includes(questionSlugPart) || questionSlugPart.includes(name.replace(/^\d{4}-/, '')),
       );
-      
+
       if (matchingProblem) {
         actualProblemName = matchingProblem;
       } else {
@@ -1870,7 +2302,7 @@ async function getLastCommitMessage(problemName) {
 
     // Construct the path for the problem folder based on user settings
     let folderPath = actualProblemName;
-    
+
     // If using difficulty folders, we need to know the difficulty
     // For now, let's try to fetch commits for the problem folder regardless of organization
     if (useDifficultyFolder || useLanguageFolder) {
@@ -1880,12 +2312,12 @@ async function getLastCommitMessage(problemName) {
 
     // Fetch commits from GitHub API for this problem folder
     const commitsUrl = `https://api.github.com/repos/${leethub_hook}/commits?path=${folderPath}&per_page=10`;
-    
+
     const options = {
       method: 'GET',
       headers: {
-        'Authorization': `token ${leethub_token}`,
-        'Accept': 'application/vnd.github.v3+json',
+        Authorization: `token ${leethub_token}`,
+        Accept: 'application/vnd.github.v3+json',
       },
     };
 
@@ -1893,26 +2325,32 @@ async function getLastCommitMessage(problemName) {
       const response = await fetch(commitsUrl, options);
       if (response.status === 200) {
         const commits = await response.json();
-        
+
         if (commits && commits.length > 0) {
           // Find the most recent commit that's not for README.md, NOTES.md, or Solution.md
           for (const commit of commits) {
             const message = commit.commit.message;
-            
+
             // Skip commits for README, NOTES, or previous solution posts
-            if (message.includes('Create readme') || 
-                message.includes('Attach Notes') || 
-                message.includes('Prepend discussion') || 
-                message.includes('solution post') ||
-                message.includes('Add solution post')) {
+            if (
+              message.includes('Create readme') ||
+              message.includes('Attach Notes') ||
+              message.includes('Prepend discussion') ||
+              message.includes('solution post') ||
+              message.includes('Add solution post')
+            ) {
               continue;
             }
-            
+
             // Look for commits that contain time/space stats (typical solution commits)
-            if (message.includes('Time:') && message.includes('Space:') && message.includes('LeetHub')) {
+            if (
+              message.includes('Time:') &&
+              message.includes('Space:') &&
+              message.includes('LeetHub')
+            ) {
               return message;
             }
-            
+
             // If it's not a README/NOTES/solution-post and doesn't have stats, it might still be a solution
             // (in case of custom commit messages or older format)
             return message;
@@ -1963,7 +2401,7 @@ LeetCodeV2.prototype.handleSolutionPost = async function (questionSlug, content,
   } catch (error) {
     console.error('Error uploading solution post:', error);
   }
-}
+};
 
 /*
 // add url change listener & manual submit button if it does not exist already
@@ -1973,4 +2411,3 @@ setTimeout(() => {
   leetCode.addUrlChangeListener();
 }, 6000);
 */
-
