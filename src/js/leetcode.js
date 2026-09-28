@@ -35,15 +35,15 @@ const languages = {
   TypeScript: '.ts',
 };
 
+// SubFolder
+const basePath = 'LeetCode';
+
 // Repo readme section markers for adding problems topic wise
 const leetCodeSectionStart = `<!---LeetCode Topics Start-->`;
 const leetCodeSectionHeader = `# LeetCode Topics`;
 const leetCodeSectionEnd = `<!---LeetCode Topics End-->`;
-const readmeFilename = 'README.md';
+const readmeFilename = `${basePath ? `${basePath}/` : ''}README.md`;
 const defaultRepoReadme = 'Contains topicwise list of solved problems.\n\n';
-
-// SubFolder
-const basePath = 'LeetCode';
 
 /* Difficulty of most recenty submitted question */
 let difficulty = '';
@@ -152,9 +152,10 @@ function constructGitHubPath(
   useDifficultyFolder = false,
   useLanguageFolder = false,
 ) {
-  // If problem is empty, this is the root README.md for the repository topic list
+  // If problem is empty, this is the topic list README.md
   if (!problem) {
-    return `https://api.github.com/repos/${hook}/contents/${encodeURIComponent(filename)}`;
+    const encodedPath = filename.split('/').map(encodeURIComponent).join('/');
+    return `https://api.github.com/repos/${hook}/contents/${encodedPath}`;
   }
 
   const filePath = getProblemFilePath(
@@ -196,7 +197,7 @@ const getCustomCommitMessage = problemContext => {
 };
 
 /**
- * Computes updated content for repository root README.md with problem added to topics.
+ * Computes updated content for repository topics README.md with problem added to topics.
  * Returns null if no changes or no topic tags.
  *
  * @param {string} token - GitHub access token
@@ -218,7 +219,27 @@ async function getUpdatedRepoReadme(token, hook, topicTags, problemName) {
     readme = decodeURIComponent(escape(atob(content)));
   } catch (err) {
     if (err.message === '404') {
-      readme = defaultRepoReadme;
+      try {
+        const { content: rootContent } = await getUpdatedData(
+          token,
+          hook,
+          '',
+          'README.md',
+          false,
+          false,
+        );
+        const rootReadme = decodeURIComponent(escape(atob(rootContent)));
+        const sectionMatch = rootReadme.match(
+          new RegExp(`${leetCodeSectionStart}[\\s\\S]*${leetCodeSectionEnd}`),
+        );
+        if (sectionMatch) {
+          readme = `${defaultRepoReadme}\n${sectionMatch[0]}`;
+        } else {
+          readme = defaultRepoReadme;
+        }
+      } catch {
+        readme = defaultRepoReadme;
+      }
       exists = false;
     } else {
       console.log(`Error fetching README: ${err.message}`);
@@ -752,7 +773,10 @@ function uploadGit(
     .then(({ stats }) => {
       if (action === 'upload') {
         /* Get SHA, if it exists */
-        const sha = stats?.shas?.[problemName]?.[fileName] ?? '';
+        const sha =
+          problemName === ''
+            ? (stats?.shas?.[fileName]?.[''] ?? '')
+            : (stats?.shas?.[problemName]?.[fileName] ?? '');
 
         return upload(
           token,
@@ -1939,7 +1963,7 @@ const loader = (leetCode, suffix) => {
         });
       }
 
-      /* Include root README.md topic tags update if applicable */
+      /* Include topics README.md update if applicable */
       const updatedRepoReadme = await getUpdatedRepoReadme(
         leethub_token,
         leethub_hook,
